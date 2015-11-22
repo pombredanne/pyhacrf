@@ -51,16 +51,16 @@ Example
     from sklearn.metrics import confusion_matrix
     predictions = model.predict(training_X_extracted)
 
-    print(confusion_matrix(y, predictions))
-    > array([[3, 0],
-    >        [1, 1]])
+    print(confusion_matrix(training_y, predictions))
+    > [[0 3]
+    >  [2 0]]
 
     print(model.predict_proba(training_X_extracted))
-    > [[ 0.21914828  0.78085172]
-    >  [ 0.30629073  0.69370927]
-    >  [ 0.36365022  0.63634978]
-    >  [ 0.40832083  0.59167917]
-    >  [ 0.51091745  0.48908255]]
+    > [[ 0.94914812  0.05085188]
+    >  [ 0.92397711  0.07602289]
+    >  [ 0.86756034  0.13243966]
+    >  [ 0.05438812  0.94561188]
+    >  [ 0.02641275  0.97358725]]
 
 Dependencies
 ------------
@@ -82,3 +82,15 @@ or from pypi:
 ::
 
     pip install pyhacrf
+
+Developing
+----------
+Clone from repository, then
+
+::
+
+    pip install -r requirements-dev.txt
+    cython pyhacrf/*.pyx
+    python setup.py install
+
+To deploy to pypi, make sure you have compiled the \*.pyx files to \*.c

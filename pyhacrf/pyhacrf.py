@@ -6,7 +6,7 @@
 import numpy as np
 import lbfgs
 from .algorithms import forward, backward
-from .algorithms import forward_predict
+from .algorithms import forward_predict, forward_max_predict
 from .algorithms import gradient, gradient_sparse, populate_sparse_features, sparse_multiply
 from .state_machine import DefaultStateMachine
 
@@ -32,6 +32,10 @@ class Hacrf(object):
     state_machine : Instance of `GeneralStateMachine` or `DefaultStateMachine`, optional (default=`DefaultStateMachine`)
         The state machine to use to generate the lattice.
 
+    viterbi : Boolean, optional (default=False).
+        Whether to use Viterbi (max-sum) decoding for predictions (not training)
+        instead of the default sum-product algorithm.
+
     References
     ----------
     See *A Conditional Random Field for Discriminatively-trained Finite-state String Edit Distance*
@@ -43,12 +47,14 @@ class Hacrf(object):
                  l2_regularization=0.0,
                  optimizer=None,
                  optimizer_kwargs=None,
-                 state_machine=None):
+                 state_machine=None,
+                 viterbi=False):
         self.parameters = None
         self.classes = None
         self.l2_regularization = l2_regularization
         self._optimizer = optimizer
         self._optimizer_kwargs = optimizer_kwargs
+        self.viterbi = viterbi
 
         self._optimizer_result = None
         self._state_machine = state_machine
@@ -98,7 +104,7 @@ class Hacrf(object):
                 ll += dll
                 gradient += dgradient
 
-            parameters_without_bias = np.array(parameters)  # exclude the bias parameters from being regularized
+            parameters_without_bias = np.array(parameters, dtype='float64')  # exclude the bias parameters from being regularized
             parameters_without_bias[0] = 0
             ll -= self.l2_regularization * np.dot(parameters_without_bias.T, parameters_without_bias)
             gradient = gradient.flatten() - 2.0 * self.l2_regularization * parameters_without_bias
@@ -110,6 +116,8 @@ class Hacrf(object):
                     print('{:10} {:10.4} {:10.4}'.format(self._evaluation_count, ll, (abs(gradient).sum())))
             self._evaluation_count += 1
 
+            # TODO: Allow some of the parameters to be frozen. ie. not trained. Can later also completely remove
+            # TODO:     the computation associated with these parameters.
             return -ll, -gradient
 
         def _objective_copy_gradient(paramers, g):
@@ -148,10 +156,16 @@ class Hacrf(object):
             Returns the probability of the sample for each class in the model,
             where classes are ordered as they are in ``self.classes_``.
         """
-        class_to_index = {class_name: index for index, class_name in enumerate(self.classes)}
-        return np.array(
-            [list(zip(*sorted(_Model(self._state_machine, x).predict(self.parameters).items(),
-                              key=lambda item: class_to_index[item[0]])))[1] for x in X])
+        
+        parameters = np.ascontiguousarray(self.parameters.T)
+
+        predictions = [_Model(self._state_machine, x).predict(parameters, self.viterbi)
+                       for x in X]
+        predictions = np.array([[probability
+                                 for _, probability
+                                 in sorted(prediction.items())]
+                                for prediction in predictions])
+        return predictions
 
     def predict(self, X):
         """Predict the class for X.
@@ -161,14 +175,16 @@ class Hacrf(object):
         Parameters
         ----------
         X : List of ndarrays, one for each training example.
-            Each training example's shape is (string1_len, string2_len, n_features, where
-            string1_len and string2_len are the length of the two training strings and n_features the
-            number of features.
+            Each training example's shape is (string1_len,
+            string2_len, n_features), where string1_len and
+            string2_len are the length of the two training strings and
+            n_features the number of features.
 
         Returns
         -------
         y : iterable of shape = [n_samples]
             The predicted classes.
+
         """
         return [self.classes[prediction.argmax()] for prediction in self.predict_proba(X)]
 
@@ -243,7 +259,7 @@ class _Model(object):
         beta = self._backward(x_dot_parameters)
         classes_to_ints = {k: i for i, k in enumerate(set(self.states_to_classes.values()))}
         states_to_classes = np.array([classes_to_ints[self.states_to_classes[state]]
-                                      for state in range(max(self.states_to_classes.keys()) + 1)])
+                                      for state in range(max(self.states_to_classes.keys()) + 1)], dtype='int64')
         if not isinstance(self.sparse_x, str):
             ll, deriv = gradient_sparse(alpha, beta, parameters, states_to_classes,
                                         self.sparse_x[0], self.sparse_x[1], classes_to_ints[self.y],
@@ -253,11 +269,17 @@ class _Model(object):
                                  self.x, classes_to_ints[self.y], I, J, K)
         return ll, deriv
 
-    def predict(self, parameters):
+    def predict(self, parameters, viterbi):
         """ Run forward algorithm to find the predicted distribution over classes. """
-        x_dot_parameters = np.dot(self.x, parameters.T)  # Pre-compute the dot product
-        alpha = forward_predict(self._lattice, x_dot_parameters, 
-                                self.state_machine.n_states)
+        x_dot_parameters = np.einsum('ijk,kl->ijl', self.x, parameters)
+
+        if not viterbi:
+            alpha = forward_predict(self._lattice, x_dot_parameters,
+                                    self.state_machine.n_states)
+        else:
+            alpha = forward_max_predict(self._lattice, x_dot_parameters,
+                                        self.state_machine.n_states)
+
         I, J, _ = self.x.shape
 
         class_Z = {}
